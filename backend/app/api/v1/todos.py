@@ -34,7 +34,7 @@ async def list_todos(
     """Get paginated list of todos."""
     skip = (page - 1) * size
 
-    cache_key = "todos:list"
+    cache_key = f"todos:list:{current_user.id}:{page}:{size}"
 
     # Try to get from cache
     cached = await redis.get(cache_key)
@@ -79,9 +79,11 @@ async def create_new_todo(
     todo_data: TodoCreate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis: RedisClient = Depends(get_redis),
 ):
     """Create a new todo item."""
     todo = await create_todo(db, todo_data, current_user.id)
+    await redis.delete_pattern(f"todos:list:{current_user.id}:*")
     return todo
 
 
@@ -93,7 +95,7 @@ async def get_todo(
 ):
     """Get a specific todo by ID."""
     todo = await get_todo_by_id(db, todo_id)
-    if not todo:
+    if not todo or todo.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Todo not found",
@@ -112,24 +114,20 @@ async def update_existing_todo(
 ):
     """Update a todo item."""
     todo = await get_todo_by_id(db, todo_id)
-    if not todo:
+    if not todo or todo.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Todo not found",
         )
 
-    update_data = todo_data.model_dump()
+    # Only touch fields the client actually sent, so an omitted field
+    # (e.g. description) is never overwritten with a default None,
+    # and an explicit `completed: false` is not treated as "no change".
+    update_data = todo_data.model_dump(exclude_unset=True)
 
-    if todo_data.completed:
-        todo.completed = todo_data.completed
+    updated_todo = await update_todo(db, todo, update_data)
 
-    # Apply other updates
-    if update_data.get("title") is not None:
-        todo.title = update_data["title"]
-    if "description" in update_data:
-        todo.description = update_data["description"]
-
-    updated_todo = await update_todo(db, todo, {})
+    await redis.delete_pattern(f"todos:list:{current_user.id}:*")
 
     return updated_todo
 
@@ -143,12 +141,14 @@ async def delete_existing_todo(
 ):
     """Delete a todo item."""
     todo = await get_todo_by_id(db, todo_id)
-    if not todo:
+    if not todo or todo.user_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Todo not found",
         )
 
     await delete_todo(db, todo)
+
+    await redis.delete_pattern(f"todos:list:{current_user.id}:*")
 
     return None

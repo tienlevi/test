@@ -49,20 +49,14 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ):
     """Authenticate user and return tokens."""
-    user = await get_user_by_email(db, user_data.email)
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User with this email not found",
-        )
-
     from app.core.security import verify_password
 
-    if not verify_password(user_data.password, user.hashed_password):
+    user = await get_user_by_email(db, user_data.email)
+
+    if not user or not verify_password(user_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect password",
+            detail="Incorrect email or password",
         )
 
     access_token = create_access_token(data={"sub": str(user.id)})
